@@ -5,13 +5,19 @@ import 'package:provider/provider.dart';
 import '../models.dart';
 import '../state/app_state.dart';
 import '../widgets/spend_card.dart';
+import '../widgets/pay_confirm_sheet.dart';
 import 'add_subscription_screen.dart';
+import '../widgets/app_icon.dart';
 
-class SubscriptionsScreen extends StatelessWidget {
-  const SubscriptionsScreen({super.key});
+/// The list of subscriptions, or of EMIs, shown inside a tab of the Recurring page.
+class RecurringList extends StatelessWidget {
+  final bool emi;
+  const RecurringList({super.key, required this.emi});
 
-  void _add(BuildContext context) => Navigator.push(
-      context, MaterialPageRoute(builder: (_) => const AddSubscriptionScreen()));
+  String get _noun => emi ? 'EMI' : 'subscription';
+
+  void _add(BuildContext context) => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => AddSubscriptionScreen(emi: emi)));
 
   static int _daysUntil(DateTime due) =>
       dayOnly(due).difference(dayOnly(DateTime.now())).inDays;
@@ -27,7 +33,10 @@ class SubscriptionsScreen extends StatelessWidget {
   }
 
   Future<void> _paid(BuildContext context, AppState s, Recurring r) async {
-    final id = await s.markPaid(r);
+    // Confirm (or change) what it is paid from before recording it.
+    final modeId = await showPayConfirm(context, r);
+    if (modeId == null || !context.mounted) return;
+    final id = await s.markPaid(r, paymentModeId: modeId);
     if (!context.mounted) return;
     _undoBar(context, s, 'Marked as paid · expense added', r, expenseId: id);
   }
@@ -43,6 +52,9 @@ class SubscriptionsScreen extends StatelessWidget {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
+            // A snackbar with an action otherwise stays until dismissed.
+            persist: false,
+            duration: const Duration(seconds: 4),
         content: Text(text),
         action: SnackBarAction(
           label: 'UNDO',
@@ -55,81 +67,85 @@ class SubscriptionsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = context.watch<AppState>();
     final cs = Theme.of(context).colorScheme;
-    final active = s.recurring.where((r) => r.active).toList()
-      ..sort((a, b) => a.nextDue.compareTo(b.nextDue));
-    final paused = s.recurring.where((r) => !r.active).toList();
+    final items = s.recurring.where((r) => r.isEmi == emi).toList();
+    // A card EMI stays "active" and finishes once its last instalment is billed.
+    final active = items.where((r) => r.active && !s.recurringCompleted(r)).toList()
+      ..sort((a, b) => s.emiNextDate(a).compareTo(s.emiNextDate(b)));
+    final done = items.where((r) => s.recurringCompleted(r)).toList();
+    final paused = items.where((r) => !r.active && !s.recurringCompleted(r)).toList();
 
     final monthly = active.fold(0.0, (sum, r) => sum + r.monthlyEquivalent);
     final dueSoon = active
-        .where((r) => _daysUntil(r.nextDue) < 8)
+        .where((r) => _daysUntil(s.emiNextDate(r)) < 8)
         .fold(0.0, (sum, r) => sum + r.amount);
+    // What is still owed across all running EMIs, interest and fee included.
+    final owed = active.fold(0.0, (sum, r) => sum + (r.isEmi ? s.emiInfo(r).balance : 0));
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Subscriptions'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: IconButton.filledTonal(
-              tooltip: 'Add subscription',
-              onPressed: () => _add(context),
-              icon: const Icon(Icons.add_rounded),
-            ),
-          ),
-        ],
-      ),
-      body: s.recurring.isEmpty
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(32, 0, 32, 100),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.event_repeat_rounded, size: 64, color: cs.outline),
-                    const SizedBox(height: 12),
-                    const Text('No subscriptions yet',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 6),
-                    Text(
-                        'Add rent, Netflix, EMIs or bills once. When one falls due, '
-                        'mark it paid and it is added to your expenses.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: cs.onSurfaceVariant)),
-                    const SizedBox(height: 20),
-                    FilledButton.icon(
-                      style: FilledButton.styleFrom(minimumSize: const Size(220, 52)),
-                      onPressed: () => _add(context),
-                      icon: const Icon(Icons.add_rounded),
-                      label: const Text('Add subscription'),
-                    ),
-                  ],
-                ),
+    if (items.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(32, 0, 32, 100),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(emi ? Icons.account_balance_rounded : Icons.event_repeat_rounded,
+                  size: 64, color: cs.outline),
+              const SizedBox(height: 12),
+              Text('No ${emi ? 'EMIs' : 'subscriptions'} yet',
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              Text(
+                  emi
+                      ? 'Add a loan or purchase EMI with its instalments. When one falls '
+                          'due, confirm the payment and it is added to your expenses.'
+                      : 'Add rent, Netflix, recharges or bills once. When one falls due, '
+                          'mark it paid and it is added to your expenses.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: cs.onSurfaceVariant)),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(minimumSize: const Size(220, 52)),
+                onPressed: () => _add(context),
+                icon: const Icon(Icons.add_rounded),
+                label: Text('Add $_noun'),
               ),
-            )
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 130),
-              children: [
-                SpendCard(
-                  label: 'Monthly commitment',
-                  amount: s.money(double.parse(monthly.toStringAsFixed(2))),
-                  pillLabel: 'Due in the next 7 days',
-                  pillValue: s.money(dueSoon),
-                  footer: Text(
-                      '${active.length} active${paused.isEmpty ? '' : ' · ${paused.length} paused'}',
-                      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13)),
-                ),
-                if (active.isNotEmpty) _header('Upcoming'),
-                for (final r in active) ...[
-                  _tile(context, s, r),
-                  const SizedBox(height: 10),
-                ],
-                if (paused.isNotEmpty) _header('Paused'),
-                for (final r in paused) ...[
-                  _tile(context, s, r),
-                  const SizedBox(height: 10),
-                ],
-              ],
-            ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 130),
+      children: [
+        SpendCard(
+          label: emi ? 'Monthly EMIs' : 'Monthly commitment',
+          amount: s.money(double.parse(monthly.toStringAsFixed(2))),
+          pillLabel: 'Due in the next 7 days',
+          pillValue: s.money(dueSoon),
+          footer: Text(
+              '${active.length} active'
+              '${paused.isEmpty ? '' : ' · ${paused.length} paused'}'
+              '${done.isEmpty ? '' : ' · ${done.length} completed'}'
+              '${emi && owed > 0 ? ' · ${s.money(owed)} left to pay' : ''}',
+              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13)),
+        ),
+        if (active.isNotEmpty) _header('Upcoming'),
+        for (final r in active) ...[
+          _tile(context, s, r),
+          const SizedBox(height: 10),
+        ],
+        if (paused.isNotEmpty) _header('Paused'),
+        for (final r in paused) ...[
+          _tile(context, s, r),
+          const SizedBox(height: 10),
+        ],
+        if (done.isNotEmpty) _header('Completed'),
+        for (final r in done) ...[
+          _tile(context, s, r),
+          const SizedBox(height: 10),
+        ],
+      ],
     );
   }
 
@@ -141,11 +157,23 @@ class SubscriptionsScreen extends StatelessWidget {
   Widget _tile(BuildContext context, AppState s, Recurring r) {
     final cs = Theme.of(context).colorScheme;
     final cat = s.category(r.categoryId);
-    final color = Color(cat.color);
     final dim = !r.active;
-    final due = r.active && _daysUntil(r.nextDue) <= 0;
-    final overdue = r.active && _daysUntil(r.nextDue) < 0;
-    final label = dim ? 'Paused' : _dueLabel(r.nextDue);
+    // A card EMI is billed on the card's statement, so it has no Paid button.
+    final cardEmi = s.isCardEmi(r);
+    final info = r.isEmi ? s.emiInfo(r) : null;
+    final due = !cardEmi && r.active && _daysUntil(r.nextDue) <= 0;
+    final overdue = !cardEmi && r.active && _daysUntil(r.nextDue) < 0;
+    final label = s.recurringCompleted(r)
+        ? (r.foreclosed
+            ? 'Foreclosed · ${DateFormat('d MMM y').format(r.closedDate)}'
+            : 'Completed')
+        : dim
+            ? 'Paused'
+            : cardEmi
+                ? (info!.next == null
+                    ? 'All instalments billed'
+                    : 'Next on the ${DateFormat('d MMM').format(info.next!)} statement')
+                : _dueLabel(r.nextDue);
     final labelColor = dim
         ? cs.onSurfaceVariant
         : overdue
@@ -167,22 +195,15 @@ class SubscriptionsScreen extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: () => Navigator.push(context,
-              MaterialPageRoute(builder: (_) => AddSubscriptionScreen(existing: r))),
+              MaterialPageRoute(
+                  builder: (_) => AddSubscriptionScreen(existing: r, emi: r.isEmi))),
           child: Padding(
             padding: const EdgeInsets.all(14),
             child: Column(
               children: [
                 Row(
                   children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: .15),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Icon(iconAt(r.icon), color: color, size: 24),
-                    ),
+                    IconTile(r.icon, size: 48),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
@@ -195,7 +216,11 @@ class SubscriptionsScreen extends StatelessWidget {
                                   fontWeight: FontWeight.w700, fontSize: 16)),
                           const SizedBox(height: 3),
                           Text(
-                              r.note.isEmpty ? cat.name : '${cat.name} · ${r.note}',
+                              [
+                                cat.name,
+                                s.paymentLabel(r.paymentModeId),
+                                if (r.note.isNotEmpty) r.note,
+                              ].join(' · '),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
@@ -206,6 +231,21 @@ class SubscriptionsScreen extends StatelessWidget {
                                   color: labelColor,
                                   fontSize: 12.5,
                                   fontWeight: FontWeight.w600)),
+                          if (info != null) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                                [
+                                  'EMI ${s.money(r.amount)}/mo',
+                                  if (info.known)
+                                    'Interest ${s.money(double.parse(info.interestTotal.toStringAsFixed(2)))}',
+                                  if (info.gstTotal > 0.004)
+                                    'GST ${s.money(double.parse(info.gstTotal.toStringAsFixed(2)))}',
+                                  if (info.fee > 0) 'Fee ${s.money(info.fee)}',
+                                ].join(' · '),
+                                // Wraps onto a second line rather than cutting the fee off.
+                                style: TextStyle(
+                                    color: Colors.orange.shade400, fontSize: 12)),
+                          ],
                         ],
                       ),
                     ),
@@ -213,7 +253,11 @@ class SubscriptionsScreen extends StatelessWidget {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Text(s.money(r.amount),
+                        // An EMI shows what is still left to pay; a subscription its amount.
+                        Text(
+                            s.money(info != null
+                                ? double.parse(info.balance.toStringAsFixed(2))
+                                : r.amount),
                             style: const TextStyle(
                                 fontWeight: FontWeight.w800, fontSize: 17)),
                         const SizedBox(height: 4),
@@ -223,7 +267,10 @@ class SubscriptionsScreen extends StatelessWidget {
                             Icon(Icons.repeat_rounded,
                                 size: 13, color: cs.onSurfaceVariant),
                             const SizedBox(width: 4),
-                            Text(r.frequency.label,
+                            Text(
+                                r.isEmi && r.totalCount > 0
+                                    ? '${info!.settled}/${r.totalCount} ${cardEmi ? 'billed' : 'paid'}'
+                                    : r.frequency.label,
                                 style: TextStyle(
                                     color: cs.onSurfaceVariant, fontSize: 12)),
                           ],
@@ -236,8 +283,9 @@ class SubscriptionsScreen extends StatelessWidget {
                   const SizedBox(height: 14),
                   Row(
                     children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
+                      if (!r.isEmi) ...[
+                        Expanded(
+                          child: OutlinedButton.icon(
                           style: OutlinedButton.styleFrom(
                             minimumSize: const Size.fromHeight(46),
                             shape: RoundedRectangleBorder(
@@ -249,6 +297,7 @@ class SubscriptionsScreen extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 10),
+                      ],
                       Expanded(
                         child: FilledButton.icon(
                           style: FilledButton.styleFrom(

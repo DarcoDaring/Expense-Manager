@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../models.dart';
 import '../state/app_state.dart';
 import '../widgets/edit_dialogs.dart';
+import '../widgets/app_icon.dart';
 
 /// Manage the user's categories or payment modes.
 class ManageScreen extends StatelessWidget {
   final bool categories;
 
+  /// Manage income categories instead of expense categories.
+  final bool income;
+
   /// Shown as a bottom-bar tab: no back arrow, and the add button lives in the app bar.
   final bool embedded;
-  const ManageScreen({super.key, required this.categories, this.embedded = false});
+  const ManageScreen(
+      {super.key, required this.categories, this.income = false, this.embedded = false});
 
   Future<void> _confirmDelete(
       BuildContext context, String name, int used, Future<void> Function() delete) async {
@@ -38,18 +42,20 @@ class ManageScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = context.watch<AppState>();
     final cs = Theme.of(context).colorScheme;
-    final title = categories ? 'Categories' : 'Payment modes';
-    void add() => categories ? showCategoryDialog(context) : showPaymentModeDialog(context);
+    final title = categories ? (income ? 'Income categories' : 'Categories') : 'Payment modes';
+    void add() => categories
+        ? showCategoryDialog(context, income: income)
+        : showPaymentModeDialog(context);
 
     final items = categories
         ? [
-            for (final c in s.categories)
+            for (final c in (income ? s.incomeCategories : s.categories))
               (
                 name: c.name,
-                icon: iconAt(c.icon),
+                icon: c.icon,
                 color: Color(c.color),
                 used: s.categoryUsage(c.id!),
-                edit: () => showCategoryDialog(context, existing: c),
+                edit: () => showCategoryDialog(context, existing: c, income: income),
                 delete: () => s.deleteCategory(c.id!),
               )
           ]
@@ -57,7 +63,7 @@ class ManageScreen extends StatelessWidget {
             for (final m in s.paymentModes)
               (
                 name: m.name,
-                icon: iconAt(m.icon),
+                icon: m.icon,
                 color: cs.primary,
                 used: s.paymentModeUsage(m.id!),
                 edit: () => showPaymentModeDialog(context, existing: m),
@@ -87,7 +93,9 @@ class ManageScreen extends StatelessWidget {
           : FloatingActionButton.extended(
               onPressed: add,
               icon: const Icon(Icons.add_rounded),
-              label: Text(categories ? 'New category' : 'New payment mode'),
+              label: Text(categories
+                  ? (income ? 'New income category' : 'New category')
+                  : 'New payment mode'),
             ),
       body: items.isEmpty
           ? Center(
@@ -102,14 +110,13 @@ class ManageScreen extends StatelessWidget {
                       for (final it in items)
                         ListTile(
                           onTap: it.edit,
-                          leading: CircleAvatar(
-                            backgroundColor: it.color.withValues(alpha: .15),
-                            child: Icon(it.icon, color: it.color, size: 22),
-                          ),
+                          leading: IconTile(it.icon, size: 44, color: it.color),
                           title: Text(it.name,
                               style: const TextStyle(fontWeight: FontWeight.w600)),
                           subtitle: Text(
-                              '${it.used} ${it.used == 1 ? 'expense' : 'expenses'}'),
+                              income
+                                  ? '${it.used} ${it.used == 1 ? 'entry' : 'entries'}'
+                                  : '${it.used} ${it.used == 1 ? 'expense' : 'expenses'}'),
                           trailing: IconButton(
                             icon: Icon(Icons.delete_outline_rounded, color: cs.error),
                             onPressed: () =>

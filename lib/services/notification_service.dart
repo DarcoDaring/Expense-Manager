@@ -6,7 +6,7 @@ import 'package:timezone/timezone.dart' as tz;
 
 import '../models.dart';
 
-/// Schedules local reminders for upcoming subscription payments. Does nothing on web.
+/// Schedules local reminders for upcoming subscription payments and credit card bills. Does nothing on web.
 class NotificationService {
   NotificationService._();
   static final instance = NotificationService._();
@@ -57,6 +57,7 @@ class NotificationService {
     List<Recurring> items,
     String Function(Recurring) title,
     String Function(double) money,
+    List<CardBill> cards,
   ) async {
     if (!_ready) return;
     try {
@@ -91,9 +92,76 @@ class NotificationService {
           due = r.advance(due);
         }
       }
+      await _scheduleCards(cards, money, now);
     } catch (e) {
       debugPrint('Could not schedule reminders: $e');
     }
+  }
+
+  /// Reminders for the next few statements of every card: a note when each
+  /// statement is generated, then 3 days before, 1 day before and on the due
+  /// day. The current bill's amount is known; later ones say to check the app.
+  Future<void> _scheduleCards(
+      List<CardBill> cards, String Function(double) money, tz.TZDateTime now) async {
+    const cycles = 3;
+    const offsets = [3, 1, 0];
+    for (final b in cards) {
+      final card = b.card;
+      if (card.id == null) continue;
+      var statement = b.statementDate;
+      for (var k = 0; k < cycles; k++) {
+        if (k > 0) {
+          statement = monthDay(statement.year, statement.month + 1, card.billingDay);
+          await _notify(
+            id: 1000000 + card.id! * 100 + k * 10 + 3,
+            fire: tz.TZDateTime(tz.local, statement.year, statement.month, statement.day, _hour),
+            now: now,
+            title: '${card.name} statement generated',
+            body: 'Open the app to see your bill and pay it.',
+          );
+        }
+        final due = billDueDate(statement, card.dueDay);
+        final known = k == 0;
+        if (known && b.due <= 0) continue;
+        for (var j = 0; j < offsets.length; j++) {
+          final days = offsets[j];
+          await _notify(
+            id: 1000000 + card.id! * 100 + k * 10 + j,
+            fire: tz.TZDateTime(tz.local, due.year, due.month, due.day - days, _hour),
+            now: now,
+            title: 'Credit card bill: ${card.name}',
+            body: '${known ? '${money(b.due)} ' : 'Your bill '}${_when(days)}',
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _notify({
+    required int id,
+    required tz.TZDateTime fire,
+    required tz.TZDateTime now,
+    required String title,
+    required String body,
+  }) async {
+    if (!fire.isAfter(now)) return;
+    await _plugin.zonedSchedule(
+      id: id,
+      title: title,
+      body: body,
+      scheduledDate: fire,
+      notificationDetails: const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'card_bills',
+          'Credit card bills',
+          channelDescription: 'Statement and due date reminders for your credit cards',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+      ),
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+    );
   }
 
   String _when(int days) => switch (days) {

@@ -1,16 +1,19 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models.dart';
 import '../state/app_state.dart';
 import '../widgets/spend_card.dart';
+import '../widgets/app_icon.dart';
+import 'analysis_extras.dart';
 
 enum _Range { week, month, year, custom }
 
-enum _By { category, payment }
+enum _By { category, payment, income }
 
 DateTime _day(DateTime d) => DateTime(d.year, d.month, d.day);
 
@@ -18,15 +21,61 @@ class ReportScreen extends StatefulWidget {
   const ReportScreen({super.key});
 
   @override
-  State<ReportScreen> createState() => _ReportScreenState();
+  State<ReportScreen> createState() => ReportScreenState();
 }
 
-class _ReportScreenState extends State<ReportScreen> {
+class ReportScreenState extends State<ReportScreen> {
   _Range _range = _Range.month;
   DateTime _anchor = _day(DateTime.now());
   DateTimeRange? _custom;
   _By _by = _By.category;
   int? _open;
+  AnalysisSection _section = AnalysisSection.spending;
+  final _scroll = ScrollController();
+  final _keys = {for (final sec in AnalysisSection.values) sec: GlobalKey()};
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Back to the top, on Spending and the current month. The page is kept alive
+  /// between visits, so this is cheaper than building it all again.
+  void resetView() {
+    if (!mounted) return;
+    setState(() {
+      _range = _Range.month;
+      _anchor = _day(DateTime.now());
+      _custom = null;
+      _by = _By.category;
+      _open = null;
+      _section = AnalysisSection.spending;
+    });
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+  }
+
+  /// Chips glide to a section of the page. The time taken grows with the distance,
+  /// so a long trip is not a sudden whip, and the curve eases in and out.
+  void _jump(AnalysisSection sec) {
+    setState(() => _section = sec);
+    if (!_scroll.hasClients) return;
+    final pos = _scroll.position;
+
+    double target = 0;
+    if (sec != AnalysisSection.spending) {
+      final ro = _keys[sec]!.currentContext?.findRenderObject();
+      if (ro == null) return;
+      target = RenderAbstractViewport.of(ro).getOffsetToReveal(ro, 0.0).offset;
+    }
+    target = target.clamp(pos.minScrollExtent, pos.maxScrollExtent);
+
+    final distance = (target - pos.pixels).abs();
+    if (distance < 1) return;
+    final ms = (380 + distance * 0.32).clamp(500.0, 1200.0).round();
+    _scroll.animateTo(target,
+        duration: Duration(milliseconds: ms), curve: Curves.easeInOutCubic);
+  }
 
   // ---- period maths: [start, end) in whole days ----
   DateTime get _start {
@@ -94,6 +143,11 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
+  List<Income> _incomeBetween(AppState s, DateTime a, DateTime b) => s.incomes.where((i) {
+        final d = _day(i.date);
+        return !d.isBefore(a) && d.isBefore(b);
+      }).toList();
+
   List<Expense> _between(AppState s, DateTime a, DateTime b) => s.expenses.where((e) {
         final d = _day(e.date);
         return !d.isBefore(a) && d.isBefore(b);
@@ -146,11 +200,19 @@ class _ReportScreenState extends State<ReportScreen> {
   Widget build(BuildContext context) {
     final s = context.watch<AppState>();
     final cs = Theme.of(context).colorScheme;
+
     final list = _between(s, _start, _end);
     final total = s.total(list);
     final (pa, pb) = _prev;
     final prevTotal = s.total(_between(s, pa, pb));
-    final slices = _by == _By.category ? s.byCategory(list) : s.byPayment(list);
+    final inc = _incomeBetween(s, _start, _end);
+    final incTotal = s.totalIncome(inc);
+    final shownTotal = _by == _By.income ? incTotal : total;
+    final slices = switch (_by) {
+      _By.category => s.byCategory(list),
+      _By.payment => s.byPayment(list),
+      _By.income => s.incomeByCategory(inc),
+    };
     final days = math.max(1, _end.difference(_start).inDays);
     final elapsed = _isCurrent
         ? math.max(1, _day(DateTime.now()).difference(_start).inDays + 1)
@@ -158,16 +220,28 @@ class _ReportScreenState extends State<ReportScreen> {
 
     return Scaffold(
       body: SafeArea(
-        child: ListView(
+        // A plain scroll view (not a lazy ListView) so every section exists and the
+        // chips at the top can scroll to it.
+        child: SingleChildScrollView(
+          controller: _scroll,
+          physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 130),
+          child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text('Analysis', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
+            AnalysisTabs(value: _section, onChanged: _jump),
+            const SizedBox(height: 14),
             _RangeTabs(value: _range, onChanged: _setRange),
             const SizedBox(height: 14),
-            _periodCard(cs, list.length),
+            _periodCard(cs, list.length + inc.length),
             const SizedBox(height: 14),
             _summaryCard(s, cs, total, prevTotal, total / elapsed),
+            const SizedBox(height: 14),
+            _cashflowCard(s, cs, incTotal, total),
+            const SizedBox(height: 14),
+            CommitmentsRow(onOpen: _jump),
             const SizedBox(height: 14),
             _Trend(
               range: _range,
@@ -190,6 +264,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 segments: const [
                   ButtonSegment(value: _By.category, label: Text('Category')),
                   ButtonSegment(value: _By.payment, label: Text('Payment')),
+                  ButtonSegment(value: _By.income, label: Text('Income')),
                 ],
                 selected: {_by},
                 onSelectionChanged: (v) => setState(() {
@@ -208,7 +283,9 @@ class _ReportScreenState extends State<ReportScreen> {
                       children: [
                         Icon(Icons.donut_large_rounded, size: 56, color: cs.outline),
                         const SizedBox(height: 8),
-                        Text('No spending in this period',
+                        Text(_by == _By.income
+                                ? 'No income in this period'
+                                : 'No spending in this period',
                             style: TextStyle(color: cs.onSurfaceVariant)),
                       ],
                     ),
@@ -222,13 +299,22 @@ class _ReportScreenState extends State<ReportScreen> {
                   children: [
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
-                      child: _Donut(slices: slices, total: total, money: s.money),
+                      child: _Donut(slices: slices, total: shownTotal, money: s.money),
                     ),
-                    for (final sl in slices) _row(context, s, sl, total, list),
+                    for (final sl in slices) _row(context, s, sl, shownTotal, list, inc),
                   ],
                 ),
               ),
+            // The other sections follow on the same page.
+            for (final sec in AnalysisSection.values.skip(1)) ...[
+              const SizedBox(height: 36),
+              KeyedSubtree(key: _keys[sec], child: AnalysisSectionTitle(sec)),
+              const SizedBox(height: 14),
+              // Each section repaints on its own, which keeps long scrolls light.
+              RepaintBoundary(child: AnalysisBody(section: sec)),
+            ],
           ],
+        ),
         ),
       ),
     );
@@ -308,7 +394,67 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
-  Widget _row(BuildContext context, AppState s, Slice sl, double total, List<Expense> list) {
+  /// Income, what was spent, and what is left, for the period.
+  Widget _cashflowCard(AppState s, ColorScheme cs, double income, double spent) {
+    final net = income - spent;
+    final green = Colors.green.shade400;
+    Widget stat(String label, String value, Color? color) => Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(fontSize: 12.5, color: cs.onSurfaceVariant)),
+              const SizedBox(height: 4),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(value,
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 20, color: color)),
+              ),
+            ],
+          ),
+        );
+    final String note;
+    if (income <= 0) {
+      note = 'No income recorded in this period';
+    } else if (net >= 0) {
+      note = 'You kept ${(net / income * 100).toStringAsFixed(0)}% of your income';
+    } else {
+      note = 'You spent ${(-net / income * 100).toStringAsFixed(0)}% more than you earned';
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                stat('INCOME', s.money(income), green),
+                stat('SPENT', s.money(spent), cs.error),
+                stat('NET', '${net < 0 ? '-' : ''}${s.money(net.abs())}',
+                    net < 0 ? cs.error : green),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: income <= 0 ? (spent > 0 ? 1.0 : 0.0) : (spent / income).clamp(0.0, 1.0),
+                minHeight: 8,
+                color: spent > income ? cs.error : green,
+                backgroundColor: green.withValues(alpha: .18),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(note, style: TextStyle(fontSize: 12.5, color: cs.onSurfaceVariant)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _row(BuildContext context, AppState s, Slice sl, double total, List<Expense> list,
+      List<Income> incomes) {
     final cs = Theme.of(context).colorScheme;
     final open = _open == sl.id;
     final pct = total == 0 ? 0.0 : sl.total / total;
@@ -316,9 +462,14 @@ class _ReportScreenState extends State<ReportScreen> {
     // Drill-down: the opposite dimension, restricted to this row.
     List<Slice> inner = const [];
     if (open) {
-      final subset = list.where(
-          (e) => _by == _By.category ? e.categoryId == sl.id : e.paymentModeId == sl.id);
-      inner = _by == _By.category ? s.byPayment(subset) : s.byCategory(subset);
+      if (_by == _By.income) {
+        // Income by category, split by the account that received it.
+        inner = s.incomeByPayment(incomes.where((i) => i.categoryId == sl.id));
+      } else {
+        final subset = list.where(
+            (e) => _by == _By.category ? e.categoryId == sl.id : e.paymentModeId == sl.id);
+        inner = _by == _By.category ? s.byPayment(subset) : s.byCategory(subset);
+      }
     }
 
     return Column(
@@ -332,7 +483,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 CircleAvatar(
                   radius: 20,
                   backgroundColor: sl.color.withValues(alpha: .15),
-                  child: Icon(sl.icon, color: sl.color, size: 20),
+                  child: AppIcon(sl.icon, color: sl.color, size: 22),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -368,7 +519,7 @@ class _ReportScreenState extends State<ReportScreen> {
                           padding: const EdgeInsets.symmetric(vertical: 6),
                           child: Row(
                             children: [
-                              Icon(i.icon, size: 16, color: i.color),
+                              AppIcon(i.icon, size: 18, color: i.color),
                               const SizedBox(width: 8),
                               Expanded(child: Text(i.label)),
                               Text(s.money(i.total),

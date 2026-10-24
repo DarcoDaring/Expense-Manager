@@ -4,16 +4,21 @@ import 'package:provider/provider.dart';
 
 import 'screens/home_shell.dart';
 import 'screens/lock_screen.dart';
+import 'screens/welcome_screen.dart';
 import 'services/lock_service.dart';
+import 'services/sync_service.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
+import 'widgets/ui_scale.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final state = AppState();
   final lock = LockService();
+  final sync = SyncService();
   try {
     await Future.wait([state.init(), lock.init()]);
+    await sync.init(state);
   } catch (e, st) {
     // Show the failure instead of dying silently on a blank screen.
     runApp(StartupError('$e\n\n$st'));
@@ -23,6 +28,7 @@ Future<void> main() async {
     providers: [
       ChangeNotifierProvider.value(value: state),
       ChangeNotifierProvider.value(value: lock),
+      ChangeNotifierProvider.value(value: sync),
     ],
     child: const ExpenseApp(),
   ));
@@ -34,6 +40,7 @@ class ExpenseApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mode = context.select<AppState, ThemeMode>((s) => s.themeMode);
+    final welcomed = context.select<SyncService, bool>((s) => s.welcomed);
     return MaterialApp(
       title: 'Expense Manager',
       debugShowCheckedModeBanner: false,
@@ -41,8 +48,8 @@ class ExpenseApp extends StatelessWidget {
       darkTheme: buildTheme(Brightness.dark),
       themeMode: mode,
       // Wrapping the navigator lets the lock cover pushed routes too.
-      builder: (context, child) => LockGate(child: child!),
-      home: const HomeShell(),
+      builder: (context, child) => UiScale(child: LockGate(child: child!)),
+      home: welcomed || !SyncService.supported ? const HomeShell() : const WelcomeScreen(),
     );
   }
 }
@@ -75,6 +82,10 @@ class _LockGateState extends State<LockGate> with WidgetsBindingObserver {
     // `hidden` is skipped on purpose: it also fires for system dialogs.
     if (state == AppLifecycleState.paused) {
       context.read<LockService>().lock();
+    } else if (state == AppLifecycleState.resumed) {
+      // Statements may have been generated while the app was in the background.
+      context.read<AppState>().syncCardEmis();
+      context.read<SyncService>().onResume();
     }
   }
 

@@ -3,20 +3,29 @@ import 'package:provider/provider.dart';
 
 import '../models.dart';
 import '../state/app_state.dart';
+import 'app_icon.dart';
 
 /// Add or edit a category. Returns its id, or null if cancelled.
-Future<int?> showCategoryDialog(BuildContext context, {Category? existing}) {
+Future<int?> showCategoryDialog(BuildContext context,
+    {Category? existing, bool income = false}) {
   return showDialog<int>(
     context: context,
     builder: (_) => _EditDialog(
-      title: existing == null ? 'New category' : 'Edit category',
+      title: existing == null
+          ? (income ? 'New income category' : 'New category')
+          : 'Edit category',
       initialName: existing?.name ?? '',
       initialIcon: existing?.icon ?? 15,
       initialColor: existing?.color ?? kPalette.first.toARGB32(),
       withColor: true,
       onSave: (name, icon, color) => context
           .read<AppState>()
-          .saveCategory(Category(id: existing?.id, name: name, icon: icon, color: color)),
+          .saveCategory(Category(
+              id: existing?.id,
+              name: name,
+              icon: icon,
+              color: color,
+              kind: existing?.kind ?? (income ? 1 : 0))),
     ),
   );
 }
@@ -33,7 +42,8 @@ Future<int?> showPaymentModeDialog(BuildContext context, {PaymentMode? existing}
       withColor: false,
       onSave: (name, icon, _) => context
           .read<AppState>()
-          .savePaymentMode(PaymentMode(id: existing?.id, name: name, icon: icon)),
+          .savePaymentMode(PaymentMode(
+          id: existing?.id, name: name, icon: icon, accountId: existing?.accountId)),
     ),
   );
 }
@@ -106,30 +116,14 @@ class _EditDialogState extends State<_EditDialog> {
               onSubmitted: (_) => _save(),
             ),
             const SizedBox(height: 8),
-            const Text('Icon', style: TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (var i = 0; i < kIcons.length; i++)
-                  InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () => setState(() => _icon = i),
-                    child: Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        color: i == _icon ? accent.withValues(alpha: .18) : null,
-                        border: Border.all(
-                            color: i == _icon ? accent : cs.outlineVariant, width: 1.4),
-                      ),
-                      child: Icon(kIcons[i],
-                          size: 22, color: i == _icon ? accent : cs.onSurfaceVariant),
-                    ),
-                  ),
-              ],
+            IconField(
+              index: _icon,
+              color: widget.withColor ? accent : null,
+              onPick: (i) => setState(() {
+                _icon = i;
+                // A category takes the icon's own colour; it can still be changed below.
+                if (widget.withColor) _color = iconSpec(i).color.toARGB32();
+              }),
             ),
             if (widget.withColor) ...[
               const SizedBox(height: 16),

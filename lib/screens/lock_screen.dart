@@ -108,9 +108,9 @@ class _LockScreenState extends State<LockScreen> {
                         ? IconButton(
                             iconSize: 34,
                             color: cs.primary,
-                            tooltip: 'Use biometrics',
                             onPressed: _biometric,
-                            icon: const Icon(Icons.fingerprint_rounded),
+                            // No tooltip: the lock screen sits above the Navigator, so there is no Overlay.
+                            icon: const Icon(Icons.fingerprint_rounded, semanticLabel: 'Use biometrics'),
                           )
                         : null,
                   ),

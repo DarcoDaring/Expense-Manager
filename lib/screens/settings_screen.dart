@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/lock_service.dart';
+import '../widgets/sync_ui.dart';
 import '../state/app_state.dart';
-import 'manage_screen.dart';
 import 'pin_setup_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -99,16 +99,8 @@ class SettingsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 130),
         children: [
-          _section('Organise'),
-          Card(
-            clipBehavior: Clip.antiAlias,
-            child: Column(children: [
-              _nav(context, Icons.category_rounded, 'Categories',
-                  '${s.categories.length} created', const ManageScreen(categories: true)),
-              _nav(context, Icons.account_balance_wallet_rounded, 'Payment modes',
-                  '${s.paymentModes.length} created', const ManageScreen(categories: false)),
-            ]),
-          ),
+          const SizedBox(height: 8),
+          const ProfileCard(),
           _section('Security'),
           Card(
             clipBehavior: Clip.antiAlias,
@@ -196,12 +188,4 @@ class SettingsScreen extends StatelessWidget {
                 fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1.1)),
       );
 
-  Widget _nav(BuildContext context, IconData icon, String title, String sub, Widget page) =>
-      ListTile(
-        leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
-        title: Text(title),
-        subtitle: Text(sub),
-        trailing: const Icon(Icons.chevron_right_rounded),
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => page)),
-      );
 }

@@ -122,6 +122,35 @@ class LockService extends ChangeNotifier {
     return true;
   }
 
+  /// A biometric check that leaves the lock state alone, used to confirm that
+  /// it is really the owner before showing something private.
+  Future<bool> confirmWithBiometric(String reason) =>
+      enabled && biometricEnabled ? _promptBiometric(reason) : Future.value(false);
+
+  /// The phone's own screen lock or biometrics, for when no app PIN is set.
+  /// Returns null when this phone has nothing to check against.
+  Future<bool?> confirmWithDevice(String reason) async {
+    if (kIsWeb) return null;
+    try {
+      if (!await _auth.isDeviceSupported()) return null;
+    } catch (_) {
+      return null;
+    }
+    authenticating = true;
+    try {
+      return await _auth.authenticate(
+        localizedReason: reason,
+        persistAcrossBackgrounding: true,
+      );
+    } on LocalAuthException {
+      return false;
+    } on PlatformException {
+      return false;
+    } finally {
+      Future.delayed(const Duration(milliseconds: 500), () => authenticating = false);
+    }
+  }
+
   /// Turns biometrics on only after one successful scan proves it works.
   Future<bool> enableBiometric() async {
     await refreshBiometricAvailability();
